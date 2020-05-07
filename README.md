@@ -1,3 +1,5 @@
+![Java CI with Maven](https://github.com/Headease/github-actions-poc/workflows/Java%20CI%20with%20Maven/badge.svg)
+
 README
 ======
 
