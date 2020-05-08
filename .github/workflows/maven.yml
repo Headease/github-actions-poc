@@ -25,3 +25,13 @@ jobs:
         APPLICATION_PASSWORD: ${{ secrets.APPLICATION_PASSWORD }}
         CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
       run: mvn -B package --file pom.xml
+    - name: Persist artifact
+      uses: actions/upload-artifact@v1
+      with:
+        name: jar
+        path: target/gitlab-actions-poc-1.0-SNAPSHOT.jar
+    - name: sure-fire reports
+      uses: actions/upload-artifact@v1
+      with:
+        name: surefire-reports
+        path: target/surefire-reports
