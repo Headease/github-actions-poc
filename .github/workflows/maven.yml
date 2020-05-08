@@ -21,4 +21,8 @@ jobs:
       with:
         java-version: 1.8
     - name: Build with Maven
+      env:
+        password: ${{ secrets.APPLICATION_PASSWORD }}
+        game.password: ${{ secrets.APPLICATION_PASSWORD }}
+        client.secret: ${{ secrets.CLIENT_SECRET }}
       run: mvn -B package --file pom.xml
