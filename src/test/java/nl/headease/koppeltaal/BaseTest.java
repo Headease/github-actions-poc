@@ -127,8 +127,13 @@ public abstract class BaseTest {
 
         try (InputStream inputStream = KoppeltaalClientTest.class.getResourceAsStream("/KoppeltaalClientTest.properties")) {
 
+            // load from file
             properties.load(inputStream);
 
+            // set from environment
+            properties.setProperty("password", System.getenv("password"));
+            properties.setProperty("game.password", System.getenv("game.password"));
+            properties.setProperty("client.secret", System.getenv("client.secret"));
         }
 
         return properties;
