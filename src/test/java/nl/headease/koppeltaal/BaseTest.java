@@ -131,9 +131,9 @@ public abstract class BaseTest {
             properties.load(inputStream);
 
             // set from environment
-            properties.setProperty("password", System.getenv("password"));
-            properties.setProperty("game.password", System.getenv("game.password"));
-            properties.setProperty("client.secret", System.getenv("client.secret"));
+            properties.setProperty("password", System.getenv("APPLICATION_PASSWORD"));
+            properties.setProperty("game.password", System.getenv("APPLICATION_PASSWORD"));
+            properties.setProperty("client.secret", System.getenv("CLIENT_SECRET"));
         }
 
         return properties;
