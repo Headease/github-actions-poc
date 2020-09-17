@@ -11,7 +11,6 @@ import nl.koppeltaal.api.util.ResourceUtil;
 import nl.koppeltaal.api.util.UrlBuilder;
 import nl.koppeltaal.api.util.UrlUtil;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.builder.MultilineRecursiveToStringStyle;
 import org.apache.commons.lang3.builder.ReflectionToStringBuilder;
 import org.apache.http.NameValuePair;
 import org.apache.http.client.utils.URLEncodedUtils;
@@ -28,8 +27,11 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static nl.koppeltaal.api.ResourceURL.RESOURCE_VERSION_SEPARATOR;
+import static nl.koppeltaal.api.util.ResourceUtil.getOptionalBooleanValueFromExtension;
+import static nl.koppeltaal.api.util.ResourceUtil.getRequiredStringValueFromExtension;
 import static nl.koppeltaal.api.util.UrlUtil.*;
 import static org.apache.commons.lang3.StringUtils.substringAfterLast;
 import static org.junit.Assert.*;
@@ -41,9 +43,9 @@ public class KoppeltaalClientTest extends BaseTest {
 
 	private static final Logger LOG = LoggerFactory.getLogger(KoppeltaalClientTest.class);
 
-    private final String ACTIVITY_DEFINITION_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ActivityDefinition";
-    private final String ACTIVITY_DEFINITION_IDENTIFIER_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#ActivityDefinitionIdentifier";
-    private final String CARE_PLAN_ACTIVITY_STATUS_ACTIVITY_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlanActivityStatus#Activity";
+	private final String ACTIVITY_DEFINITION_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ActivityDefinition";
+	private final String ACTIVITY_DEFINITION_IDENTIFIER_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#ActivityDefinitionIdentifier";
+	private final String CARE_PLAN_ACTIVITY_STATUS_ACTIVITY_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlanActivityStatus#Activity";
 	private final String CARE_TEAM_STATUS_EXTENSION = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CareTeam#Status";
 
 	private final String ACTIVITY_DEFINITION_RESOURCE_URL = "https://edgekoppeltaal.vhscloud.nl/FHIR/Koppeltaal/Other?code=ActivityDefinition";
@@ -56,7 +58,7 @@ public class KoppeltaalClientTest extends BaseTest {
 	private final String RESOURCE_TYPE_MESSAGE_HEADER = "MessageHeader";
 	private final String RESOURCE_TYPE_ACTIVITY_STATUS = "CarePlanActivityStatus";
 
-    @Test
+	@Test
 	public void testAuthentication() throws Exception {
 		Assert.assertTrue(xmlKoppeltaalClient.testAuthentication());
 	}
@@ -130,35 +132,24 @@ public class KoppeltaalClientTest extends BaseTest {
 		String patientUrl = ResourceURL.create(baseUrl, ResourceType.Patient, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
 		String userUrl = ResourceURL.create(baseUrl, ResourceType.Practitioner, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
 
-		String launchUrl = xmlKoppeltaalClient.launch(activityId, patientUrl, userUrl, null);
+		String launchUrl = xmlKoppeltaalClient.launch(clientId, patientUrl, userUrl, null);
 		Assert.assertTrue(launchUrl.contains("iss="));
 		Assert.assertTrue(launchUrl.contains("launch="));
 	}
 
 	@Test
-	public void testMobileLaunch() throws IOException {
-		String baseUrl = BASE_URL;
-		String patientUrl = ResourceURL.create(baseUrl, ResourceType.Patient, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
-		String userUrl = ResourceURL.create(baseUrl, ResourceType.Practitioner, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
-
-		MobileLaunchCode mobileLaunchCode = xmlKoppeltaalClient.mobileLaunch(activityId, patientUrl, userUrl, null);
-		Assert.assertNotNull(mobileLaunchCode.getActivationCode());
-		Assert.assertTrue(mobileLaunchCode.getExpiresIn() > 0);
-	}
-
-	@Test
 	public void testOAuthAuthorization() throws Exception {
-		KoppeltaalClient gameKoppeltaalClient = new KoppeltaalClient(server, gameUsername, gamePassword, Format.JSON);
+		KoppeltaalClient koppeltaalClient = new KoppeltaalClient(server, username, password, Format.JSON);
 
 		String baseUrl = BASE_URL;
 		String patientUrl = ResourceURL.create(baseUrl, ResourceType.Patient, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
 		String userUrl = ResourceURL.create(baseUrl, ResourceType.Practitioner, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
 
-		String launchUrl = xmlKoppeltaalClient.launch(activityId, patientUrl, userUrl, null);
+		String launchUrl = xmlKoppeltaalClient.launch(clientId, patientUrl, userUrl, null);
 
-		Conformance metadata = gameKoppeltaalClient.getMetadata();
+		Conformance metadata = koppeltaalClient.getMetadata();
 		Map<String, String> parameters = getParametersAsMap(launchUrl);
-		String oAuthAuthorizeUrl = gameKoppeltaalClient.createOAuthAuthorizeUrl(clientId, activityRedirectUri,
+		String oAuthAuthorizeUrl = koppeltaalClient.createOAuthAuthorizeUrl(clientId, activityRedirectUri,
 				parameters.get("launch"), "abc", metadata);
 
 		GenericUrl httpGet = new GenericUrl(oAuthAuthorizeUrl);
@@ -167,70 +158,72 @@ public class KoppeltaalClientTest extends BaseTest {
 		Map<String, String> oauthParams = getParametersAsMap(response);
 		String code = oauthParams.get("code");
 
-		OAuthTokenDetails tokenDetails = gameKoppeltaalClient.getOAuthToken(code, activityRedirectUri, metadata);
+		OAuthTokenDetails tokenDetails = koppeltaalClient.getOAuthToken(code, activityRedirectUri, metadata);
 
-		gameKoppeltaalClient.getNextNewAndClaim(tokenDetails);
+		koppeltaalClient.getNextNewAndClaim(tokenDetails);
 
 		try {
 			Assert.assertNotNull(tokenDetails);
 			Assert.assertTrue(StringUtils.isNotEmpty(tokenDetails.getToken()));
 		} finally {
-			gameKoppeltaalClient.close();
+			koppeltaalClient.close();
 		}
 	}
 
 	@Test
-	public void testMobileOAuthAuthorization() throws Exception {
+	public void testOAuthAuthorizationWithRefresh() throws Exception {
 
-		try (KoppeltaalClient gameKoppeltaalClient = new KoppeltaalClient(server, gameUsername, gamePassword, Format.JSON)) {
-			/*
-			 * THIS IS THE PART EXECUTED BY THE PORTAL
-			 */
+		// NB: The application in this test launches to itself
 
-			String baseUrl = BASE_URL;
-			String patientUrl = ResourceURL.create(baseUrl, ResourceType.Patient, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
-			String userUrl = ResourceURL.create(baseUrl, ResourceType.Practitioner, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
+		final Conformance metadata = xmlKoppeltaalClient.getMetadata();
 
-			// Goes to the user...
-			MobileLaunchCode mobileLaunch = xmlKoppeltaalClient.mobileLaunch(activityId, patientUrl, userUrl, null);
+		/*
+		 * Part that is executed by application that initiates the launch
+		 */
+		String baseUrl = BASE_URL;
+		String patientUrl = ResourceURL.create(baseUrl, ResourceType.Patient, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
+		String userUrl = ResourceURL.create(baseUrl, ResourceType.Practitioner, UUID.randomUUID().toString(), NEW_RESOURCE_VERSION);
 
-			/*
-			 * THE USER RECIEVES THE LAUNCHCODE, THIS IS THE MOBILE PART.
-			 * clientId = The application identifier activityRedirectUri =
-			 * Should not be required, ticket created in
-			 */
-			OAuthTokenDetails tokenDetails = gameKoppeltaalClient.getMobileOAuthToken(clientId, activityRedirectUri,
-					mobileLaunch.getActivationCode());
+		// Use launchUrl to connect to the target application
+		String launchUrl = this.xmlKoppeltaalClient.launch(clientId, patientUrl, userUrl, null);
 
-			/*
-			 * THE MOBILE APP NEEDS TO STORE THE OAUTH ACCESS TOKEN IN THE FORM
-			 * OF OAuthTokenDetails.
-			 */
+		/*
+		 * Part that is executed by application that receives the launch
+		 */
+		Map<String, String> parameters = getParametersAsMap(launchUrl);
+		String oAuthAuthorizeUrl = xmlKoppeltaalClient.createOAuthAuthorizeUrl(clientId, activityRedirectUri,
+				parameters.get("launch"), "abc", metadata);
 
-			gameKoppeltaalClient.getNextNewAndClaim(tokenDetails);
-			Assert.assertNotNull(tokenDetails);
-			Assert.assertTrue(StringUtils.isNotEmpty(tokenDetails.getToken()));
+		GenericUrl httpGet = new GenericUrl(oAuthAuthorizeUrl);
+		String response = new RedirectLocationResponseHandler().handleResponse(createHttpClient().buildGetRequest(httpGet).execute());
 
-			OAuthTokenDetails newTokenDetails = gameKoppeltaalClient.refreshTokenDetails(tokenDetails, clientId, clientSecret);
+		Map<String, String> oauthParams = getParametersAsMap(response);
+		String code = oauthParams.get("code");
 
-			Assert.assertNotEquals(newTokenDetails.getToken(), tokenDetails.getToken());
-			Assert.assertNotEquals(newTokenDetails.getRefreshToken(), tokenDetails.getRefreshToken());
+		OAuthTokenDetails tokenDetails = xmlKoppeltaalClient.getOAuthToken(code, activityRedirectUri, metadata);
 
-			try {
-				// Met oude token proberen te connecten.
-				gameKoppeltaalClient.getNextNewAndClaim(tokenDetails);
-				Assert.fail("Should have gotten an Excpetion");
-			} catch (Exception e) {
+		xmlKoppeltaalClient.getNextNewAndClaim(tokenDetails);
+		Assert.assertNotNull(tokenDetails);
+		Assert.assertTrue(StringUtils.isNotEmpty(tokenDetails.getToken()));
+
+		OAuthTokenDetails newTokenDetails = xmlKoppeltaalClient.refreshTokenDetails(tokenDetails, clientId, clientSecret);
+
+		Assert.assertNotEquals(newTokenDetails.getToken(), tokenDetails.getToken());
+		Assert.assertNotEquals(newTokenDetails.getRefreshToken(), tokenDetails.getRefreshToken());
+
+		try {
+			// Request with old token
+			xmlKoppeltaalClient.getNextNewAndClaim(tokenDetails);
+			Assert.fail("Should have gotten an Excpetion");
+		} catch (Exception e) {
 //				System.out.println(e);
-			}
-
-//			tokenDetails = gameKoppeltaalClient.refreshTokenDetails(tokenDetails, clientId, "bla");
-
 		}
+
+		// Request with refreshed token
+		xmlKoppeltaalClient.getNextNewAndClaim(newTokenDetails);
 	}
 
 	@Test
-	@Ignore("Temporarily excluded until https://pim.vzvz.nl/servicedesk/customer/portal/1/KS-243 has been resolved")
 	public void testPostGetAndClaim() throws Exception {
 		String messageId = UUID.randomUUID().toString();
 		KoppeltaalBundle bundle = newCreateOrUpdateCarePlanBundle(messageId);
@@ -261,7 +254,11 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		// Log received UpdateCarePlanActivityStatus resource
 		final Map<String, AtomEntry<? extends Resource>> atomEntryMap = getAtomEntryMap(messageBundle);
-		LOG.info(toString(atomEntryMap.get(RESOURCE_TYPE_ACTIVITY_STATUS).getResource()));
+		final String receivedObject = toString(atomEntryMap.get(RESOURCE_TYPE_ACTIVITY_STATUS).getResource());
+		LOG.info(receivedObject);
+
+		writeStringToFile("status_update_received_from_kt_to_java_object.txt", receivedObject);
+		writeLastPostedMessageBundleToFile("status_update_request_body_sent_to_kt.xml", true);
 	}
 
 	@Test
@@ -276,8 +273,8 @@ public class KoppeltaalClientTest extends BaseTest {
 				bundle.getFeed().getEntryList().size() - 1, responseHeader.getData().size());
 
 		responseHeader.getData().forEach(resourceReference ->
-                assertTrue(StringUtils.contains(resourceReference.getReferenceSimple(), "/_history/"))
-        );
+				assertTrue(StringUtils.contains(resourceReference.getReferenceSimple(), "/_history/"))
+		);
 	}
 
 	@Ignore("Result on number of returned MessageHeaderEntries for event CreateOrUpdateActivityDefinition is always 0, for some reason")
@@ -286,7 +283,7 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		KoppeltaalBundle messageBundle = xmlKoppeltaalClient.getNextNewAndClaimActivityDefinition(null);
 
-        Assert.assertEquals(1, messageBundle.getMessageHeaderEntries().size());
+		Assert.assertEquals(1, messageBundle.getMessageHeaderEntries().size());
 
 		KoppeltaalBundle bundle = xmlKoppeltaalClient.getMessageBundleByHeader(messageBundle.getMessageHeader());
 
@@ -358,10 +355,17 @@ public class KoppeltaalClientTest extends BaseTest {
 
 	@Test
 	public void testCreateNewActivityDefinition() throws Exception {
+
 		final String activityDefinitionId = UUID.randomUUID().toString();
 		final String activityName = UUID.randomUUID().toString();
 		final ActivityKind activityType = ActivityKind.E_LEARNING;
-		Other resource = createActivityDefinitionResource(activityDefinitionId, activityName, activityType);
+		final String description = "unit test description";
+		final ActivityPerformer performer = ActivityPerformer.RELATED_PERSON;
+		final boolean isActive = true;
+		final boolean isDomainSpecific = true;
+		final boolean isArchived = false;
+
+		Other resource = createActivityDefinitionResource(activityDefinitionId, activityName, activityType, description, performer, isActive, isDomainSpecific, isArchived);
 
 		Resource otherResource = xmlKoppeltaalClient.postResource(resource, ACTIVITY_DEFINITION_RESOURCE_URL, null);
 		assertNotNull(otherResource.getResourceType());
@@ -376,8 +380,47 @@ public class KoppeltaalClientTest extends BaseTest {
 		assertEquals(activityType.getDisplay(), ((Coding) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#ActivityKind").getValue()).getDisplaySimple());
 		assertEquals(clientId, ((ResourceReference) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#Application").getValue()).getDisplaySimple());
 
+		// Test optional fields
+
+		// ActivityDefinition.activityDefinitionIdentifier 0..1
+		assertEquals(activityDefinitionId, ((StringType) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#ActivityDefinitionIdentifier").getValue()).asStringValue());
+		// ActivityDefinition.description 0..1
+		assertEquals(description, ((StringType) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#ActivityDescription").getValue()).getValue());
+		// ActivityDefinition.defaultPerformer 0..1
+		assertEquals(performer.getValue(), ((Coding) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#DefaultPerformer").getValue()).getCodeSimple());
+		// ActivityDefinition.isActive 0..1
+		assertEquals(isActive, ((BooleanType) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#IsActive").getValue()).getValue());
+		// ActivityDefinition.isDomainSpecific 0..1
+		assertEquals(isDomainSpecific, ((BooleanType) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#IsDomainSpecific").getValue()).getValue());
+		// ActivityDefinition.isArchived 0..1
+		assertEquals(isArchived, ((BooleanType) activityDefinition.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#IsArchived").getValue()).getValue());
+
+		// ActivityDefinition.identifier 0..* - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// ActivityDefinition.launchType 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+
+		final List<Extension> subActivities = activityDefinition.getExtensions().stream()
+				.filter(extension -> StringUtils.equals(extension.getUrlSimple(), "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#SubActivity"))
+				.collect(Collectors.toList());
+
+		assertEquals(2, subActivities.size());
+
+		subActivities.forEach(extension -> {
+			// ActivityDefinition.subActivity.name 1..1
+			assertTrue(StringUtils.startsWith(getRequiredStringValueFromExtension(extension, "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#SubActivityName"), "sad name from test"));
+			// ActivityDefinition.subActivity.identifier 1..1
+			assertTrue(StringUtils.startsWith(getRequiredStringValueFromExtension(extension, "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#SubActivityIdentifier"), "sad identifier from test"));
+			// ActivityDefinition.subActivity.description 0..1
+			assertTrue(StringUtils.startsWith(getRequiredStringValueFromExtension(extension, "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#SubActivityDescription"), "sad description from test"));
+			// ActivityDefinition.subActivity.isActive 0..1
+			assertEquals(true, getOptionalBooleanValueFromExtension(extension, "http://ggz.koppeltaal.nl/fhir/Koppeltaal/ActivityDefinition#SubActivityIsActive"));
+		});
+
 		// Log received CreateOrUpdateActivityDefinition resource
-		LOG.info(toString(activityDefinition));
+		final String receivedObject = toString(activityDefinition);
+		LOG.info(receivedObject);
+
+		writeStringToFile("activity_definition_received_from_kt_to_java_object.txt", receivedObject);
+		writeLastPostedMessageBundleToFile("activity_definition_request_body_sent_to_kt.xml", false);
 	}
 
 	@Test
@@ -413,7 +456,7 @@ public class KoppeltaalClientTest extends BaseTest {
 		String activityDefinitionIdentifier = ((StringType) activityDefinitionIdentifierExtension.getValue()).getValue();
 
 		CarePlan carePlan = createCarePlanFromActivityDefinitionAndFetchFullModel(activityDefinitionIdentifier);
-        assertNotNull(carePlan);
+		assertNotNull(carePlan);
 
 		CarePlan.CarePlanActivityComponent carePlanActivity = carePlan.getActivity().get(0);
 		String carePlanActivityDefinitionIdentifier = ((StringType) carePlanActivity.getExtension(ACTIVITY_DEFINITION_EXTENSION).getValue()).asStringValue();
@@ -424,15 +467,15 @@ public class KoppeltaalClientTest extends BaseTest {
 	@Test
 	public void testPublishUpdateCarePlanActivityStatus() throws Exception {
 
-        //create ActivityDefinition
-        Resource activityDefinition = createActivityDefinitionAndFetchFullModel();
+		//create ActivityDefinition
+		Resource activityDefinition = createActivityDefinitionAndFetchFullModel();
 
 		//fetch the activity ID
-        String activityDefinitionIdentifier = ResourceUtil.getRequiredStringValueFromExtension(activityDefinition, ACTIVITY_DEFINITION_IDENTIFIER_EXTENSION);
+		String activityDefinitionIdentifier = ResourceUtil.getRequiredStringValueFromExtension(activityDefinition, ACTIVITY_DEFINITION_IDENTIFIER_EXTENSION);
 
 		//create careplan
 		CarePlan carePlan = createCarePlanFromActivityDefinitionAndFetchFullModel(activityDefinitionIdentifier);
-        assertNotNull(carePlan);
+		assertNotNull(carePlan);
 
 		CarePlan.CarePlanActivityComponent carePlanActivity = carePlan.getActivity().get(0);
 		String carePlanActivityDefinitionIdentifier = ((StringType) carePlanActivity.getExtension(ACTIVITY_DEFINITION_EXTENSION).getValue()).asStringValue();
@@ -444,33 +487,33 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		KoppeltaalBundle changeStatus = newUpdateCarePlanActivityStatus(updateActivityStatusMessageId, carePlanActivityDefinitionIdentifier, "0", CarePlanActivityStatus.InProgress);
 
-        //set same patient in the update status message as in careplan
+		//set same patient in the update status message as in careplan
 		ResourceReference resourceReference = (ResourceReference) changeStatus.getMessageHeader().getEntry().getResource()
 				.getExtension(PATIENT_EXTENSION).getValue();
 		resourceReference.setReferenceSimple(patientReferenceUri);
 
-        //publish the update status message
+		//publish the update status message
 		xmlKoppeltaalClient.postMessage(changeStatus);
 
-        //query koppeltaal for the update message
+		//query koppeltaal for the update message
 		KoppeltaalBundle nextNewAndClaim =  xmlKoppeltaalClient.getNextNewAndClaim(patientReferenceUri,
 				Event.UPDATE_CARE_PLAN_ACTIVITY_STATUS);
 		nextNewAndClaim.getMessageHeaderByMessageId(updateActivityStatusMessageId);
 
-        //verify message has same id
-        assertEquals(updateActivityStatusMessageId, nextNewAndClaim.getMessageHeader().getEntry().getResource().getIdentifierSimple());
+		//verify message has same id
+		assertEquals(updateActivityStatusMessageId, nextNewAndClaim.getMessageHeader().getEntry().getResource().getIdentifierSimple());
 
-        //verify activityDefinitionId of the updated activity
-        boolean activityIdFound = false;
-        for (AtomEntry<? extends Resource> atomEntry : nextNewAndClaim.getFeed().getEntryList()) {
-            Extension extension = atomEntry.getResource().getExtension(CARE_PLAN_ACTIVITY_STATUS_ACTIVITY_EXTENSION);
-            if (extension != null && ((StringType) extension.getValue()).getValue().equals(activityDefinitionIdentifier)) {
-                activityIdFound = true;
-                break;
-            }
-        }
-        Assert.assertTrue(activityIdFound);
-    }
+		//verify activityDefinitionId of the updated activity
+		boolean activityIdFound = false;
+		for (AtomEntry<? extends Resource> atomEntry : nextNewAndClaim.getFeed().getEntryList()) {
+			Extension extension = atomEntry.getResource().getExtension(CARE_PLAN_ACTIVITY_STATUS_ACTIVITY_EXTENSION);
+			if (extension != null && ((StringType) extension.getValue()).getValue().equals(activityDefinitionIdentifier)) {
+				activityIdFound = true;
+				break;
+			}
+		}
+		Assert.assertTrue(activityIdFound);
+	}
 
 	@Test
 	public void testCareTeamResourceVersioning() {
@@ -484,12 +527,27 @@ public class KoppeltaalClientTest extends BaseTest {
 
 	@Test
 	public void testCreateAndUpdatePractitioner() throws Exception {
+
+		final String namePrefix = "Dhr";
+		final String nameFamily = "family";
+		final String nameSuffix = "MD";
+		final String nameDisplay = "Dhr createName family MD";
+		final Date namePeriodStart = Date.from(Instant.now().minus(java.time.Duration.ofDays(365)));
+		final Date namePeriodEnd = Date.from(Instant.now());
+		final HumanName.NameUse nameUse = HumanName.NameUse.official;
+		final NameParams initialName = new NameParams("createName", nameFamily, namePrefix, nameSuffix, nameDisplay, namePeriodStart, namePeriodEnd, nameUse);
+
 		final String practitionerId = UUID.randomUUID().toString();
-		final String familyName = "family";
-		final PractitionerParams practitionerParams = new PractitionerParams(practitionerId, BASE_URL, "", new NameParams("createName", familyName));
+		final List<ContactParams> telecoms = Collections.singletonList(new ContactParams(Contact.ContactSystem.email, Contact.ContactUse.work, "test@example.com", Date.from(Instant.now()), Date.from(Instant.now().plus(java.time.Duration.ofDays(100)))));
+
+		final PractitionerParams practitionerParams = new PractitionerParams(practitionerId, BASE_URL, "", initialName, telecoms);
+
+		final String assignerIdentifier = ResourceURL.create(BASE_URL, ResourceType.Organization, UUID.randomUUID().toString(), "");
+		final IdentifierParams identifierParams = new IdentifierParams(Identifier.IdentifierUse.official, "12345", "AGB", "agb-z", new Date(), new Date(2537874594000L), new ResourceReference().setReferenceSimple(assignerIdentifier));
+		practitionerParams.addIdentifier(identifierParams);
 
 		final String messageId = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_PRACTITIONER, practitionerParams.getUrl(), practitionerParams.getUrl())
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_PRACTITIONER, practitionerParams.getUrl(), practitionerParams.getUrl())
 				.addPractitioner(practitionerParams)
 				.build();
 
@@ -506,12 +564,14 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		final String practitionerVersion = substringAfterLast(practitionerEntry.getLinks().get(SELF_LINK), RESOURCE_VERSION_SEPARATOR);
 
-		// Update practitioner
-		final String updatedGivenName = "updatedName";
-		final PractitionerParams practitionerParams2 = new PractitionerParams(practitionerId, BASE_URL, practitionerVersion, new NameParams(updatedGivenName, familyName));
+		// Update Practitioner.name
+		final String nameGivenUpdated = "updatedName";
+		final NameParams updatedName = new NameParams(nameGivenUpdated, nameFamily, namePrefix, nameSuffix, nameDisplay, namePeriodStart, namePeriodEnd, nameUse);
+		final PractitionerParams practitionerParams2 = new PractitionerParams(practitionerId, BASE_URL, practitionerVersion, updatedName, telecoms);
+		practitionerParams2.addIdentifier(identifierParams);
 
 		final String messageId2 = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, Event.CREATE_OR_UPDATE_PRACTITIONER, practitionerParams2.getUrl(), practitionerParams2.getUrl())
+		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_PRACTITIONER, practitionerParams2.getUrl(), practitionerParams2.getUrl())
 				.addPractitioner(practitionerParams2)
 				.build();
 
@@ -527,11 +587,21 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		// Test required fields
 		final HumanName name = practitioner.getName();
-		assertEquals(familyName, name.getFamily().get(0).getValue());
-		assertEquals(updatedGivenName, name.getGiven().get(0).getValue());
+		assertEquals(nameFamily, name.getFamily().get(0).getValue());
+		assertEquals(nameGivenUpdated, name.getGiven().get(0).getValue());
+		assertEquals(namePrefix, name.getPrefix().get(0).getValue());
+		assertEquals(nameSuffix, name.getSuffix().get(0).getValue());
+		assertEquals(nameDisplay, name.getTextSimple());
+		assertEquals(nameUse, name.getUseSimple());
+		assertEquals(namePeriodStart, convertDateTimeTypeToDate(name.getPeriod().getStart()));
+		assertEquals(namePeriodEnd, convertDateTimeTypeToDate(name.getPeriod().getEnd()));
 
 		// Log received CreateOrUpdatePractitioner resource
-		LOG.info(toString(practitioner));
+		final String receivedObject = toString(practitioner);
+		LOG.info(receivedObject);
+
+		writeStringToFile("practitioner_received_from_kt_to_java_object.txt", receivedObject);
+		writeLastPostedMessageBundleToFile("practitioner_request_body_sent_to_kt.xml", true);
 	}
 
 	@Test
@@ -541,8 +611,12 @@ public class KoppeltaalClientTest extends BaseTest {
 		final String patientIdentifier = ResourceURL.create(BASE_URL, ResourceType.Patient, UUID.randomUUID().toString(), "");
 		final RelatedPersonParams relatedPersonParams = new RelatedPersonParams(relatedPersonId, BASE_URL, "", patientIdentifier, new NameParams("createName", familyName));
 
+		final String assignerIdentifier = ResourceURL.create(BASE_URL, ResourceType.Organization, UUID.randomUUID().toString(), "");
+		final IdentifierParams identifierParams = new IdentifierParams(Identifier.IdentifierUse.official, "12345", "BSN", "bsn", new Date(), new Date(2537874594000L), new ResourceReference().setReferenceSimple(assignerIdentifier));
+		relatedPersonParams.addIdentifier(identifierParams);
+
 		final String messageId = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_RELATED_PERSON, relatedPersonParams.getUrl(), relatedPersonParams.getUrl())
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_RELATED_PERSON, relatedPersonParams.getUrl(), relatedPersonParams.getUrl())
 				.addRelatedPerson(relatedPersonParams)
 				.build();
 
@@ -562,9 +636,10 @@ public class KoppeltaalClientTest extends BaseTest {
 		// Update relatedPerson
 		final String updatedGivenName = "updatedName";
 		final RelatedPersonParams relatedPersonParams2 = new RelatedPersonParams(relatedPersonId, BASE_URL, relatedPersonVersion, patientIdentifier, new NameParams(updatedGivenName, familyName));
+		relatedPersonParams.addIdentifier(identifierParams);
 
 		final String messageId2 = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, Event.CREATE_OR_UPDATE_RELATED_PERSON, relatedPersonParams2.getUrl(), relatedPersonParams2.getUrl())
+		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_RELATED_PERSON, relatedPersonParams2.getUrl(), relatedPersonParams2.getUrl())
 				.addRelatedPerson(relatedPersonParams2)
 				.build();
 
@@ -586,7 +661,11 @@ public class KoppeltaalClientTest extends BaseTest {
 		assertEquals(patientIdentifier, relatedPerson.getPatient().getReferenceSimple());
 
 		// Log received CreateOrUpdateRelatedPerson resource
-		LOG.info(toString(relatedPerson));
+		final String receivedObject = toString(relatedPerson);
+		LOG.info(receivedObject);
+
+		writeStringToFile("related_person_received_from_kt_to_java_object.txt", receivedObject);
+		writeLastPostedMessageBundleToFile("related_person_request_body_sent_to_kt.xml", true);
 	}
 
 	@Test
@@ -609,10 +688,10 @@ public class KoppeltaalClientTest extends BaseTest {
 				relationship,
 				gender,
 				age
-				);
+		);
 
 		final String messageId = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_RELATED_PERSON, relatedPersonParams.getUrl(), relatedPersonParams.getUrl())
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_RELATED_PERSON, relatedPersonParams.getUrl(), relatedPersonParams.getUrl())
 				.addRelatedPerson(relatedPersonParams)
 				.build();
 
@@ -639,17 +718,21 @@ public class KoppeltaalClientTest extends BaseTest {
 		LOG.info(toString(relatedPerson));
 	}
 
-@Test
+	@Test
 	public void testCreatePractitionerOptionalFields() throws Exception {
 
 		final ArrayList<ContactParams> telecoms = new ArrayList<>();
 		telecoms.add(new ContactParams(Contact.ContactSystem.email, Contact.ContactUse.work, "test@example.com", Date.from(Instant.now()), Date.from(Instant.now().plus(java.time.Duration.ofDays(100)))));
 		telecoms.add(new ContactParams(Contact.ContactSystem.phone, Contact.ContactUse.mobile, "+31600000000", Date.from(Instant.now()), Date.from(Instant.now().plus(java.time.Duration.ofDays(365)))));
 
+		final String assignerIdentifier = ResourceURL.create(BASE_URL, ResourceType.Organization, UUID.randomUUID().toString(), "");
+		final IdentifierParams identifierParams = new IdentifierParams(Identifier.IdentifierUse.official, "12345", "AGB", "agb-z", new Date(), new Date(2537874594000L), new ResourceReference().setReferenceSimple(assignerIdentifier));
+
 		final PractitionerParams practitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("givenName", "family"), telecoms);
+		practitionerParams.addIdentifier(identifierParams);
 
 		final String messageId = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_PRACTITIONER, practitionerParams.getUrl(), practitionerParams.getUrl())
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_PRACTITIONER, practitionerParams.getUrl(), practitionerParams.getUrl())
 				.addPractitioner(practitionerParams)
 				.build();
 
@@ -669,6 +752,23 @@ public class KoppeltaalClientTest extends BaseTest {
 		assertEquals(telecoms.get(1).getValue(), practitioner.getTelecom().get(1).getValueSimple());
 		assertEquals(telecoms.get(0).getSystem(), practitioner.getTelecom().get(0).getSystemSimple());
 		assertEquals(telecoms.get(1).getSystem(), practitioner.getTelecom().get(1).getSystemSimple());
+		assertEquals(telecoms.get(0).getUse(), practitioner.getTelecom().get(0).getUseSimple());
+		assertEquals(telecoms.get(1).getUse(), practitioner.getTelecom().get(1).getUseSimple());
+		assertEquals(telecoms.get(0).getPeriodStart(), convertDateTimeTypeToDate(practitioner.getTelecom().get(0).getPeriod().getStart()));
+		assertEquals(telecoms.get(1).getPeriodStart(), convertDateTimeTypeToDate(practitioner.getTelecom().get(1).getPeriod().getStart()));
+		assertEquals(telecoms.get(0).getPeriodEnd(), convertDateTimeTypeToDate(practitioner.getTelecom().get(0).getPeriod().getEnd()));
+		assertEquals(telecoms.get(1).getPeriodEnd(), convertDateTimeTypeToDate(practitioner.getTelecom().get(1).getPeriod().getEnd()));
+
+		assertEquals(practitionerParams.getIdentifiers().size(), practitioner.getIdentifier().size());
+		final Identifier identifier = practitioner.getIdentifier().get(0);
+		assertEquals(identifierParams.getValue(), identifier.getValueSimple());
+		assertEquals(identifierParams.getSystem(), identifier.getSystemSimple());
+		assertEquals(identifierParams.getLabel(), identifier.getLabelSimple());
+		assertEquals(identifierParams.getAssigner().getDisplaySimple(), identifier.getAssigner().getDisplaySimple());
+		assertEquals(identifierParams.getPeriodStart(), convertDateTimeTypeToDate(identifier.getPeriod().getStart()));
+		assertEquals(identifierParams.getPeriodEnd(), convertDateTimeTypeToDate(identifier.getPeriod().getEnd()));
+
+		// Practitioner.organization 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
 
 		// Log received CreateOrUpdateRelatedPerson resource
 		LOG.info(toString(practitioner));
@@ -676,13 +776,33 @@ public class KoppeltaalClientTest extends BaseTest {
 
 	@Test
 	public void testCreateAndUpdatePatient() throws Exception {
+
+		final String assignerIdentifier = ResourceURL.create(BASE_URL, ResourceType.Organization, UUID.randomUUID().toString(), "");
+		final IdentifierParams identifierParams = new IdentifierParams(Identifier.IdentifierUse.official, "12345", "BSN", "bsn", new Date(), new Date(2537874594000L), new ResourceReference().setReferenceSimple(assignerIdentifier));
+
+		final ContactParams contactParams = new ContactParams(Contact.ContactSystem.email, Contact.ContactUse.work, "test@example.com", Date.from(Instant.now()), Date.from(Instant.now().plus(java.time.Duration.ofDays(100))));
+
+		final AddressParams addressParams = new AddressParams();
+		addressParams.setUse(Address.AddressUse.home);
+		addressParams.setText("Some Street 28A, 1010AB Amsterdam, NL");
+		addressParams.setZip("1010AB");
+		addressParams.setCity("Amsterdam");
+		addressParams.setState("NH");
+		addressParams.setCountry("NL");
+		addressParams.setPeriodStart(Date.from(Instant.now().minus(java.time.Duration.ofDays(1000L))));
+		addressParams.setPeriodEnd(Date.from(Instant.now()));
+
 		final String patientId = UUID.randomUUID().toString();
 		final PatientParams patientParams = new PatientParams(patientId, BASE_URL, "", new NameParams("createName", "family"));
 		patientParams.setGender(new GenderParams("F", "Female"));
 		patientParams.setAge(36);
+		patientParams.addIdentifier(identifierParams);
+		patientParams.addTelecom(contactParams);
+		patientParams.setAddress(addressParams);
+		patientParams.setBirthDate(Date.from(Instant.now().minus(java.time.Duration.ofDays(36 * 365L))));
 
 		final String messageId = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_PATIENT, patientParams.getUrl(), patientParams.getUrl())
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_PATIENT, patientParams.getUrl(), patientParams.getUrl())
 				.addPatient(patientParams)
 				.and()
 				.build();
@@ -703,11 +823,15 @@ public class KoppeltaalClientTest extends BaseTest {
 		// Update patient
 		final String updatedGivenName = "updatedName";
 		final PatientParams patientParams2 = new PatientParams(patientId, BASE_URL, patientVersion, new NameParams(updatedGivenName, "family"));
-		patientParams.setGender(new GenderParams("F", "Female"));
-		patientParams.setAge(36);
+		patientParams2.setGender(new GenderParams("F", "Female"));
+		patientParams2.setAge(36);
+		patientParams2.addIdentifier(identifierParams);
+		patientParams2.addTelecom(contactParams);
+		patientParams2.setAddress(addressParams);
+		patientParams2.setBirthDate(Date.from(Instant.now().minus(java.time.Duration.ofDays(36 * 365L))));
 
 		final String messageId2 = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, Event.CREATE_OR_UPDATE_PATIENT, patientParams2.getUrl(), patientParams2.getUrl())
+		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_PATIENT, patientParams2.getUrl(), patientParams2.getUrl())
 				.addPatient(patientParams2)
 				.and()
 				.build();
@@ -723,8 +847,175 @@ public class KoppeltaalClientTest extends BaseTest {
 		final Patient patient = (Patient) atomEntryMap2.get(RESOURCE_TYPE_PATIENT).getResource();
 
 		// Test required fields
+		// NB: See #testHumanName for extensive testing of Patient.name
 		final HumanName name = patient.getName().get(0);
 		assertEquals(updatedGivenName, name.getGiven().get(0).getValue());
+
+		// Log received CreateOrUpdatePatient resource
+		final String receivedObject = toString(patient);
+		LOG.info(receivedObject);
+
+		writeStringToFile("patient_received_from_kt_to_java_object.txt", receivedObject);
+		writeLastPostedMessageBundleToFile("patient_request_body_sent_to_kt.xml", true);
+	}
+
+	@Test
+	public void testCreatePatientOptionalFields() throws Exception {
+
+		final String assignerIdentifier = ResourceURL.create(BASE_URL, ResourceType.Organization, UUID.randomUUID().toString(), "");
+		final IdentifierParams identifierParams = new IdentifierParams(Identifier.IdentifierUse.official, "12345", "BSN", "bsn", new Date(), new Date(2537874594000L), new ResourceReference().setReferenceSimple(assignerIdentifier));
+
+		final ContactParams contactParams = new ContactParams(Contact.ContactSystem.email, Contact.ContactUse.work, "test@example.com", Date.from(Instant.now()), Date.from(Instant.now().plus(java.time.Duration.ofDays(100))));
+
+		final AddressParams addressParams = new AddressParams();
+		addressParams.setUse(Address.AddressUse.home);
+		addressParams.setText("Some Street 28A, 1010AB Amsterdam, NL");
+		addressParams.setZip("1010AB");
+		addressParams.setCity("Amsterdam");
+		addressParams.setState("NH");
+		addressParams.setCountry("NL");
+		addressParams.setPeriodStart(Date.from(Instant.now().minus(java.time.Duration.ofDays(1000L))));
+		addressParams.setPeriodEnd(Date.from(Instant.now()));
+
+		final PatientParams patientParams = new PatientParams(UUID.randomUUID().toString(), BASE_URL, "", new NameParams("patient", "patientFamily"));
+		patientParams.setGender(new GenderParams(AdministrativeGender.FEMALE));
+		patientParams.setAge(26);
+		patientParams.addIdentifier(identifierParams);
+		patientParams.addTelecom(contactParams);
+		patientParams.setAddress(addressParams);
+		patientParams.setBirthDate(Date.from(Instant.now().minus(java.time.Duration.ofDays(26 * 365L))));
+
+		final String messageId = UUID.randomUUID().toString();
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_PATIENT, patientParams.getUrl(), patientParams.getUrl())
+				.addPatient(patientParams)
+				.and()
+				.build();
+
+		xmlKoppeltaalClient.postMessage(koppeltaalBundle);
+
+		// Retrieve creation message
+		final KoppeltaalBundle fullResourceBundle = getFullResourceBundle(messageId, koppeltaalBundle, Event.CREATE_OR_UPDATE_PATIENT);
+
+		final Map<String, AtomEntry<? extends Resource>> atomEntryMap = getAtomEntryMap(fullResourceBundle);
+		assertEquals(2, atomEntryMap.size());
+
+		final Patient patient = (Patient) atomEntryMap.get(RESOURCE_TYPE_PATIENT).getResource();
+
+		// Test optional fields
+		assertEquals(patientParams.getTelecoms().size(), patient.getTelecom().size());
+		assertEquals(contactParams.getValue(), patient.getTelecom().get(0).getValueSimple());
+		assertEquals(contactParams.getSystem(), patient.getTelecom().get(0).getSystemSimple());
+		assertEquals(contactParams.getUse(), patient.getTelecom().get(0).getUseSimple());
+		assertEquals(contactParams.getPeriodStart(), convertDateTimeTypeToDate(patient.getTelecom().get(0).getPeriod().getStart()));
+		assertEquals(contactParams.getPeriodEnd(), convertDateTimeTypeToDate(patient.getTelecom().get(0).getPeriod().getEnd()));
+
+		assertEquals(patientParams.getIdentifiers().size(), patient.getIdentifier().size());
+		final Identifier identifier = patient.getIdentifier().get(0);
+		assertEquals(identifierParams.getValue(), identifier.getValueSimple());
+		assertEquals(identifierParams.getSystem(), identifier.getSystemSimple());
+		assertEquals(identifierParams.getLabel(), identifier.getLabelSimple());
+		assertEquals(identifierParams.getAssigner().getDisplaySimple(), identifier.getAssigner().getDisplaySimple());
+		assertEquals(identifierParams.getPeriodStart(), convertDateTimeTypeToDate(identifier.getPeriod().getStart()));
+		assertEquals(identifierParams.getPeriodEnd(), convertDateTimeTypeToDate(identifier.getPeriod().getEnd()));
+
+		assertEquals(patientParams.getGender().getCode(), patient.getGender().getCoding().get(0).getCodeSimple());
+		assertEquals(patientParams.getGender().getDisplay(), patient.getGender().getCoding().get(0).getDisplaySimple());
+
+		assertEquals(patientParams.getAge().intValue(), ((IntegerType) patient.getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/Patient#Age").getValue()).getValue());
+
+		assertEquals(patientParams.getBirthDate(), convertDateTimeTypeToDate(patient.getBirthDate()));
+
+		assertEquals(patientParams.getAddress().getUse(), patient.getAddress().get(0).getUseSimple());
+		assertEquals(patientParams.getAddress().getText(), patient.getAddress().get(0).getTextSimple());
+		assertEquals(patientParams.getAddress().getZip(), patient.getAddress().get(0).getZipSimple());
+		assertEquals(patientParams.getAddress().getCity(), patient.getAddress().get(0).getCitySimple());
+		assertEquals(patientParams.getAddress().getState(), patient.getAddress().get(0).getStateSimple());
+		assertEquals(patientParams.getAddress().getCountry(), patient.getAddress().get(0).getCountrySimple());
+		assertEquals(patientParams.getAddress().getPeriodStart(), convertDateTimeTypeToDate(patient.getAddress().get(0).getPeriod().getStart()));
+		assertEquals(patientParams.getAddress().getPeriodEnd(), convertDateTimeTypeToDate(patient.getAddress().get(0).getPeriod().getEnd()));
+
+		// Log received CreateOrUpdatePatient resource
+		LOG.info(toString(patient));
+	}
+
+	@Test
+	public void testHumanName() throws Exception {
+
+		final String patientId = UUID.randomUUID().toString();
+		final Date periodStart = new Date(80, Calendar.DECEMBER, 11);
+		final Date periodEnd = new Date();
+		final NameParams nameParams = new NameParams("Jan", "Spek", "van", null, "Jan Bart van der Spek", periodStart, periodEnd, HumanName.NameUse.official);
+		nameParams.addGivenName("Bart");
+		nameParams.addNamePrefix("der");
+
+		final PatientParams patientParams = new PatientParams(patientId, BASE_URL, "", nameParams);
+
+		// add another name
+		final NameParams nameParams2 = new NameParams("Nicky", "Kraan", null, "MD", "Frans Kraan MD", periodStart, periodEnd, HumanName.NameUse.nickname);
+		patientParams.addName(nameParams2);
+
+		final String messageId = UUID.randomUUID().toString();
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_PATIENT, patientParams.getUrl(), patientParams.getUrl())
+				.addPatient(patientParams)
+				.and()
+				.build();
+
+		jsonKoppeltaalClient.postMessage(koppeltaalBundle);
+
+		// Retrieve creation message
+		final KoppeltaalBundle fullResourceBundle = getFullResourceBundle(messageId, koppeltaalBundle, Event.CREATE_OR_UPDATE_PATIENT);
+
+		final Map<String, AtomEntry<? extends Resource>> atomEntryMap = getAtomEntryMap(fullResourceBundle);
+		assertEquals(2, atomEntryMap.size());
+
+		final Patient patient = (Patient) atomEntryMap.get(RESOURCE_TYPE_PATIENT).getResource();
+		assertNotNull(patient);
+
+		final List<HumanName> names = patient.getName();
+		assertEquals(2, names.size());
+
+		for (HumanName name : names) {
+			if (name.getUseSimple() == HumanName.NameUse.nickname) {
+
+				assertEquals(1, name.getGiven().size());
+				assertEquals(1, name.getFamily().size());
+				assertEquals(0, name.getPrefix().size());
+				assertEquals(1, name.getSuffix().size());
+				assertNotNull(name.getPeriod());
+
+				assertEquals("Nicky", name.getGiven().get(0).getValue());
+				assertEquals("Kraan", name.getFamily().get(0).getValue());
+				assertEquals("MD", name.getSuffix().get(0).getValue());
+
+				assertEquals(periodStart.getYear() + 1900, name.getPeriod().getStartSimple().getYear());
+				assertEquals(periodStart.getMonth() + 1, name.getPeriod().getStartSimple().getMonth());
+				assertEquals(periodStart.getDate(), name.getPeriod().getStartSimple().getDay());
+				assertEquals(periodEnd.getYear() + 1900, name.getPeriod().getEndSimple().getYear());
+				assertEquals(periodEnd.getMonth() + 1, name.getPeriod().getEndSimple().getMonth());
+				assertEquals(periodEnd.getDate(), name.getPeriod().getEndSimple().getDay());
+
+			} else if (name.getUseSimple() == HumanName.NameUse.official) {
+
+				assertEquals(2, name.getGiven().size());
+				assertEquals(1, name.getFamily().size());
+				assertEquals(2, name.getPrefix().size());
+				assertEquals(0, name.getSuffix().size());
+				assertNotNull(name.getPeriod());
+
+				assertTrue(Arrays.asList("Jan", "Bart").contains(name.getGiven().get(0).getValue()));
+				assertTrue(Arrays.asList("Jan", "Bart").contains(name.getGiven().get(1).getValue()));
+				assertTrue(Arrays.asList("van", "der").contains(name.getPrefix().get(0).getValue()));
+				assertTrue(Arrays.asList("van", "der").contains(name.getPrefix().get(1).getValue()));
+				assertEquals("Spek", name.getFamily().get(0).getValue());
+
+				assertEquals(periodStart.getYear() + 1900, name.getPeriod().getStartSimple().getYear());
+				assertEquals(periodStart.getMonth() + 1, name.getPeriod().getStartSimple().getMonth());
+				assertEquals(periodStart.getDate(), name.getPeriod().getStartSimple().getDay());
+				assertEquals(periodEnd.getYear() + 1900, name.getPeriod().getEndSimple().getYear());
+				assertEquals(periodEnd.getMonth() + 1, name.getPeriod().getEndSimple().getMonth());
+				assertEquals(periodEnd.getDate(), name.getPeriod().getEndSimple().getDay());
+			}
+		}
 
 		// Log received CreateOrUpdatePatient resource
 		LOG.info(toString(patient));
@@ -754,20 +1045,25 @@ public class KoppeltaalClientTest extends BaseTest {
 		final CareTeamParams careTeamParams = new CareTeamParams(careTeamIdentifier.getValueSimple(), BASE_URL, CareTeamStatus.ACTIVE, "CareTeam name", getPeriod(), "");
 		final ResourceReference patientReference = TestUtils.getResourceReference(patient.getUrl());
 
-        final String fullCareTeamIdentifier = ResourceURL.create(BASE_URL, "CareTeam", careTeamIdentifier.getValueSimple());
-        final List<ParticipantParams> participantParams = Arrays.asList(
-                new ParticipantParams(practitioner.getId(), fullCareTeamIdentifier, CarePlanParticipantRole.REQUESTER),
-                new ParticipantParams(relatedPerson.getId(), CarePlanParticipantRole.THIRDPARTY));
+		final String fullCareTeamIdentifier = ResourceURL.create(BASE_URL, "CareTeam", careTeamIdentifier.getValueSimple());
+		final List<ParticipantParams> participantParams = Arrays.asList(
+				new ParticipantParams(practitioner.getId(), fullCareTeamIdentifier, CarePlanParticipantRole.REQUESTER),
+				new ParticipantParams(relatedPerson.getId(), CarePlanParticipantRole.THIRDPARTY));
 
-        final ActivityParams activityParams = new ActivityParams(UUID.randomUUID().toString(), UUID.randomUUID().toString(), new CodingParams("ELearning", "E-Learning"), "Available", new DateAndTime(new Date()), participantParams, new ArrayList<>());
+		final ActivityParams activityParams = new ActivityParams(UUID.randomUUID().toString(), UUID.randomUUID().toString(), "Available", new DateAndTime(new Date()), participantParams, new ArrayList<>());
 
-        final String messageId1 = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId1, domain, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getId(), carePlanParams.getUrl())
+		final String goalId = UUID.randomUUID().toString();
+		final String goalDescription = "Goal description";
+		final String goalNotes = "goal notes";
+
+		final String messageId1 = UUID.randomUUID().toString();
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId1, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getId(), carePlanParams.getUrl())
 				.addCarePlan(carePlanParams)
-                .addActivity(activityParams)
-                .addParticipant(CarePlanParticipantRole.REQUESTER.getValue(), practitioner.getId(), careTeamParams.getId())
-                .addParticipant(CarePlanParticipantRole.THIRDPARTY.getValue(), relatedPerson.getId())
+				.addActivity(activityParams)
+				.addParticipant(CarePlanParticipantRole.REQUESTER.getValue(), practitioner.getId(), careTeamParams.getId())
+				.addParticipant(CarePlanParticipantRole.THIRDPARTY.getValue(), relatedPerson.getId())
 				.setPatientReference(patient.getId())
+				.addGoal(goalId, goalDescription, goalNotes)
 				.and()
 				.addPatient(patient)
 				.and()
@@ -815,12 +1111,13 @@ public class KoppeltaalClientTest extends BaseTest {
 		final RelatedPersonParams relatedPersonParams2 = new RelatedPersonParams(relatedPersonId, BASE_URL, relatedPersonVersion, patient.getUrl(), new NameParams("RelatedPerson", "Name"));
 
 		final String messageId2 = UUID.randomUUID().toString();
-		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, Event.CREATE_OR_UPDATE_CARE_PLAN, patientParams2.getId(), carePlanParams2.getUrl())
+		final KoppeltaalBundle koppeltaalBundle2 = new KoppeltaalBundleBuilder(messageId2, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_CARE_PLAN, patientParams2.getId(), carePlanParams2.getUrl())
 				.addCarePlan(carePlanParams2)
-                .addActivity(activityParams)
-                .addParticipant(CarePlanParticipantRole.REQUESTER.getValue(), practitionerParams2.getId(), careTeamParams2.getId())
-                .addParticipant(CarePlanParticipantRole.THIRDPARTY.getValue(), relatedPersonParams2.getId())
+				.addActivity(activityParams)
+				.addParticipant(CarePlanParticipantRole.REQUESTER.getValue(), practitionerParams2.getId(), careTeamParams2.getId())
+				.addParticipant(CarePlanParticipantRole.THIRDPARTY.getValue(), relatedPersonParams2.getId())
 				.setPatientReference(patientParams2.getId())
+				.addGoal(goalId, goalDescription, goalNotes)
 				.and()
 				.addPatient(patientParams2)
 				.and()
@@ -848,11 +1145,103 @@ public class KoppeltaalClientTest extends BaseTest {
 		assertEquals(updatedCarePlanStatus, carePlan.getStatus().getValue());
 
 		// Log received CreateOrUpdateCarePlan resources
-		LOG.info(toString(carePlan));
-		LOG.info(toString(careTeam));
+		final String receivedCarePlanObject = toString(carePlan);
+		final String receivedCareTeamObject = toString(careTeam);
+		LOG.info(receivedCarePlanObject);
+		LOG.info(receivedCareTeamObject);
 		LOG.info(toString(atomEntryMap2.get(RESOURCE_TYPE_PATIENT).getResource()));
 		LOG.info(toString(atomEntryMap2.get(RESOURCE_TYPE_PRACTITIONER).getResource()));
 		LOG.info(toString(atomEntryMap2.get(RESOURCE_TYPE_RELATED_PERSON).getResource()));
+
+		writeStringToFile("care_plan_received_from_kt_to_java_object.txt", receivedCarePlanObject);
+		writeStringToFile("care_team_received_from_kt_to_java_object.txt", receivedCareTeamObject);
+		writeLastPostedMessageBundleToFile("careplan_and_careteam_request_body_sent_to_kt.xml", true);
+	}
+
+	@Test
+	public void testCreateCarePlanOptionalFields() throws Exception {
+
+		final String carePlanId = UUID.randomUUID().toString();
+		final CarePlanParams carePlanParams = new CarePlanParams(carePlanId, BASE_URL, "", CarePlan.CarePlanStatus.planned);
+
+		final String patientId = UUID.randomUUID().toString();
+		final PatientParams patient = new PatientParams(patientId, BASE_URL, "", new NameParams("Client", "Name"));
+
+		final String practitionerId = UUID.randomUUID().toString();
+		final PractitionerParams practitioner = new PractitionerParams(practitionerId, BASE_URL, "", new NameParams("Practitioner", "Name"));
+
+		final List<ParticipantParams> participantParams = Arrays.asList(new ParticipantParams(practitioner.getId(), CarePlanParticipantRole.REQUESTER));
+
+		final SubActivityParams subActivityParams = new SubActivityParams(UUID.randomUUID().toString(), "Available");
+
+		final String activityId = UUID.randomUUID().toString();
+		final ActivityParams activityParams = new ActivityParams(activityId, UUID.randomUUID().toString(), "Available", new DateAndTime(new Date()), participantParams, Collections.singletonList(subActivityParams));
+
+		final String goalId = UUID.randomUUID().toString();
+		final String goalDescription = "Goal description";
+		final String goalNotes = "goal notes";
+
+		final String messageId = UUID.randomUUID().toString();
+		final KoppeltaalBundle koppeltaalBundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getId(), carePlanParams.getUrl())
+				.addCarePlan(carePlanParams)
+				.addActivity(activityParams)
+				.addParticipant(CarePlanParticipantRole.REQUESTER.getValue(), practitioner.getId())
+				.addGoal(goalId, goalDescription, goalNotes)
+				.setPatientReference(patient.getId())
+				.and().build();
+
+		xmlKoppeltaalClient.postMessage(koppeltaalBundle);
+
+		// now get full bundle containing resource versions
+		final KoppeltaalBundle fullResourceBundle = getFullResourceBundle(messageId, koppeltaalBundle, Event.CREATE_OR_UPDATE_CARE_PLAN);
+		final CarePlan carePlan = (CarePlan) getAtomEntryMap(fullResourceBundle).get(RESOURCE_TYPE_CARE_PLAN).getResource();
+
+		// Test optional CarePlan fields
+		assertEquals(patient.getUrl(), carePlan.getPatient().getReferenceSimple());
+
+		assertEquals(participantParams.size(), carePlan.getParticipant().size());
+		assertEquals(participantParams.get(0).getRole().getValue(), carePlan.getParticipant().get(0).getRole().getCoding().get(0).getCodeSimple());
+		assertEquals(participantParams.get(0).getMember(), carePlan.getParticipant().get(0).getMember().getReferenceSimple());
+
+		assertEquals(1, carePlan.getGoal().size());
+		assertEquals(goalId, carePlan.getGoal().get(0).getXmlId()); // not in KT spec, but convenient to distinguish goals
+		assertEquals(goalDescription, carePlan.getGoal().get(0).getDescriptionSimple());
+		assertEquals(goalNotes, carePlan.getGoal().get(0).getNotesSimple());
+
+		assertEquals(1, carePlan.getActivity().size());
+		assertEquals(activityId, carePlan.getActivity().get(0).getXmlId()); // according to spec, this value should actually be in an extension with url "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ActivityID"?
+		assertEquals(activityParams.getIdentifier(), ((StringType) carePlan.getActivity().get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ActivityIdentifier").getValue()).getValue());
+		assertEquals(activityParams.getDefinition(), ((StringType) carePlan.getActivity().get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ActivityDefinition").getValue()).getValue());
+
+		final List<Extension> subActivityExtensions = carePlan.getActivity().get(0).getExtensions().stream()
+				.filter(extension -> StringUtils.equals(extension.getUrlSimple(), "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#SubActivity"))
+				.collect(Collectors.toList());
+
+		assertEquals(activityParams.getSubActivities().size(), subActivityExtensions.size());
+		assertEquals(subActivityParams.getIdentifier(), ((StringType) subActivityExtensions.get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#SubActivityIdentifier").getValue()).getValue());
+		assertEquals(subActivityParams.getStatus(), ((Coding) subActivityExtensions.get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#SubActivityStatus").getValue()).getCodeSimple());
+
+		final List<Extension> activityParticipantExtensions = carePlan.getActivity().get(0).getExtensions().stream()
+				.filter(extension -> StringUtils.equals(extension.getUrlSimple(), "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#Participant"))
+				.collect(Collectors.toList());
+
+		assertEquals(activityParams.getParticipant().size(), activityParticipantExtensions.size());
+		assertEquals(activityParams.getParticipant().get(0).getRole().getValue(), ((CodeableConcept) activityParticipantExtensions.get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ParticipantRole").getValue()).getCoding().get(0).getCodeSimple());
+		assertEquals(activityParams.getParticipant().get(0).getMember(), ((ResourceReference) activityParticipantExtensions.get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ParticipantMember").getValue()).getReferenceSimple());
+
+		assertEquals(activityParams.getStartDate().toHumanDisplay(), ((DateTimeType) carePlan.getActivity().get(0).getExtension("http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#StartDate").getValue()).getValue().toHumanDisplay());
+
+		// TODO: support following fields for CarePlan resource
+		// CarePlan.goal.status 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.activity.goal 0..* - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.activity.notes 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.activity.started 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.activity.finished 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.activity.cancelled 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.activity.endDate 0..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.relation 0..* - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.relation.type 1..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
+		// CarePlan.relation.reference 1..1 - NOT SUPPORTED (YET) BY THIS ADAPTER
 	}
 
 	@Test
@@ -875,7 +1264,7 @@ public class KoppeltaalClientTest extends BaseTest {
 	public void sendAndReadUserMessageRequiredFields() throws Exception {
 
 		final String sendingApplicationUrl = ResourceURL.create(BASE_URL, ResourceType.Device, UUID.randomUUID().toString());
-        final PractitionerParams receivingPractitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("given", "family"));
+		final PractitionerParams receivingPractitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("given", "family"));
 		final String messageSubject = "integration-test-subject";
 		final String messageContent = "integration-test-content";
 
@@ -884,10 +1273,10 @@ public class KoppeltaalClientTest extends BaseTest {
 		final String messageId = UUID.randomUUID().toString();
 		final String PatientUrl = ResourceURL.create(BASE_URL, ResourceType.Patient, UUID.randomUUID().toString());
 
-		final KoppeltaalBundle bundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_USER_MESSAGE, PatientUrl, userMessageParams.getUrl())
+		final KoppeltaalBundle bundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_USER_MESSAGE, PatientUrl, userMessageParams.getUrl())
 				.addUserMessage(userMessageParams)
-                .and().addPractitioner(receivingPractitionerParams)
-                .build();
+				.and().addPractitioner(receivingPractitionerParams)
+				.build();
 
 		xmlKoppeltaalClient.postMessage(bundle);
 
@@ -905,14 +1294,18 @@ public class KoppeltaalClientTest extends BaseTest {
 		assertEquals(messageContent, ((StringType) messageResource.getExtension(urlBuilder.setField(UrlExtensionField.CONTENT).build()).getValue()).asStringValue());
 		assertNull(messageResource.getExtension(urlBuilder.setField(UrlExtensionField.CONTEXT).build()));
 
-		LOG.info(toString(messageResource));
+		final String receivedObject = toString(messageResource);
+		LOG.info(receivedObject);
+
+		writeStringToFile("user_message_received_from_kt_to_java_object.txt", receivedObject);
+		writeLastPostedMessageBundleToFile("user_message_request_body_sent_to_kt.xml", true);
 	}
 
 	@Test
 	public void sendAndReadUserMessageContext() throws Exception {
 
 		final String sendingApplicationUrl = ResourceURL.create(BASE_URL, ResourceType.Device, UUID.randomUUID().toString());
-        final PractitionerParams receivingPractitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("given", "family"));
+		final PractitionerParams receivingPractitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("given", "family"));
 		final String messageSubject = "integration-test-subject";
 		final String messageContent = "integration-test-content";
 		final String messageContext = "http://ggz.koppeltaal.nl/fhir/Koppeltaal/CarePlan#ActivityIdentifier/0102030405";
@@ -921,10 +1314,10 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		final String messageId = UUID.randomUUID().toString();
 		final String patientUrl = ResourceURL.create(BASE_URL, ResourceType.Patient, UUID.randomUUID().toString());
-		final KoppeltaalBundle bundle = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_USER_MESSAGE, patientUrl, userMessageParams.getUrl())
+		final KoppeltaalBundle bundle = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_USER_MESSAGE, patientUrl, userMessageParams.getUrl())
 				.addUserMessage(userMessageParams)
-                .and().addPractitioner(receivingPractitionerParams)
-                .build();
+				.and().addPractitioner(receivingPractitionerParams)
+				.build();
 
 		xmlKoppeltaalClient.postMessage(bundle);
 
@@ -946,9 +1339,9 @@ public class KoppeltaalClientTest extends BaseTest {
 	@Test(expected = IllegalArgumentException.class)
 	public void shouldBreakWhenMessageKindNotSet() throws Exception {
 
-        final String sendingApplicationUrl = ResourceURL.create(BASE_URL, ResourceType.Device, UUID.randomUUID().toString());
-        final PractitionerParams receivingPractitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("given", "family"));
-        final String messageSubject = "integration-test-subject";
+		final String sendingApplicationUrl = ResourceURL.create(BASE_URL, ResourceType.Device, UUID.randomUUID().toString());
+		final PractitionerParams receivingPractitionerParams = new PractitionerParams(UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION, new NameParams("given", "family"));
+		final String messageSubject = "integration-test-subject";
 		final String messageContent = "integration-test-content";
 		final MessageKind messageKind = null;
 
@@ -956,9 +1349,9 @@ public class KoppeltaalClientTest extends BaseTest {
 
 		final String patientUrl = ResourceURL.create(BASE_URL, ResourceType.Patient, UUID.randomUUID().toString());
 
-		new KoppeltaalBundleBuilder(UUID.randomUUID().toString(), domain, Event.CREATE_OR_UPDATE_USER_MESSAGE, patientUrl, userMessageParams.getUrl())
+		new KoppeltaalBundleBuilder(UUID.randomUUID().toString(), domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_USER_MESSAGE, patientUrl, userMessageParams.getUrl())
 				.addUserMessage(userMessageParams)
-                .and().addPractitioner(receivingPractitionerParams)
+				.and().addPractitioner(receivingPractitionerParams)
 				.build();
 	}
 
@@ -1009,9 +1402,9 @@ public class KoppeltaalClientTest extends BaseTest {
 
 	private CarePlan createCarePlanFromActivityDefinitionAndFetchFullModel(String activityDefinitionIdentifier) throws Exception {
 
-        //careplan message id
-        String messageId = UUID.randomUUID().toString();
-        System.out.println("create care plan messageId: " + messageId);
+		//careplan message id
+		String messageId = UUID.randomUUID().toString();
+		System.out.println("create care plan messageId: " + messageId);
 
 		KoppeltaalBundle fullCarePlanBundle = createCarePlanBundle(messageId, activityDefinitionIdentifier);
 		final Map<String, AtomEntry<? extends Resource>> resourceMap = getAtomEntryMap(fullCarePlanBundle);
@@ -1023,19 +1416,18 @@ public class KoppeltaalClientTest extends BaseTest {
 
 	private KoppeltaalBundle createCarePlanBundle(String messageId, String activityDefinitionIdentifier) throws Exception {
 
-		CodingParams kind = new CodingParams("activityKindCode", "activityKindDisplay");
 		Identifier careTeamIdentifier = TestUtils.getRandomIdentifier();
 
 		List<ParticipantParams> participants = new ArrayList<>();
 		participants.add(new ParticipantParams("participant", careTeamIdentifier.getValueSimple(), CarePlanParticipantRole.CLIENT));
 
-		ActivityParams activity = new ActivityParams(UUID.randomUUID().toString(), activityDefinitionIdentifier, kind, "Active", new DateAndTime(Calendar.getInstance()), participants, null);
+		ActivityParams activity = new ActivityParams(UUID.randomUUID().toString(), activityDefinitionIdentifier, "Active", new DateAndTime(Calendar.getInstance()), participants, null);
 
 		KoppeltaalBundle carePlanBundle = newCreateOrUpdateCarePlanBundle(messageId, activity, careTeamIdentifier);
 
-        xmlKoppeltaalClient.postMessage(carePlanBundle);
+		xmlKoppeltaalClient.postMessage(carePlanBundle);
 
-        return getFullResourceBundle(messageId, carePlanBundle, Event.CREATE_OR_UPDATE_CARE_PLAN);
+		return getFullResourceBundle(messageId, carePlanBundle, Event.CREATE_OR_UPDATE_CARE_PLAN);
 	}
 
 	private KoppeltaalBundle getFullResourceBundle(String messageId, KoppeltaalBundle bundle, Event event) throws KoppeltaalException, IOException {
@@ -1076,7 +1468,7 @@ public class KoppeltaalClientTest extends BaseTest {
 		participants.add(new ParticipantParams("participant", null, CarePlanParticipantRole.CLIENT));
 
 		ActivityParams activity = new ActivityParams(UUID.randomUUID().toString(), UUID.randomUUID().toString(),
-				new CodingParams("activityKindCode", "activityKindDisplay"), "Active", new DateAndTime(Calendar.getInstance()), participants,null);
+				"Active", new DateAndTime(Calendar.getInstance()), participants,null);
 
 		PractitionerParams practitioner = new PractitionerParams(UUID.randomUUID().toString(), baseUrl, NEW_RESOURCE_VERSION,
 				new NameParams("John", "Doe"));
@@ -1084,16 +1476,16 @@ public class KoppeltaalClientTest extends BaseTest {
 		RelatedPersonParams relatedPerson = new RelatedPersonParams(UUID.randomUUID().toString(), baseUrl, NEW_RESOURCE_VERSION,
 				patient.getUrl(), new NameParams("Related", "Person"));
 
-		return new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getUrl(),
+		return new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getUrl(),
 				carePlan.getUrl())
 				.addCarePlan(carePlan).addGoal("1", "Activity goal", null)
-					.addActivity(activity)
-					.addParticipant("Assigner", practitioner.getUrl()).setPatientReference(patient.getUrl())
+				.addActivity(activity)
+				.addParticipant("Assigner", practitioner.getUrl()).setPatientReference(patient.getUrl())
 				.and()
-					.addPatient(patient)
+				.addPatient(patient)
 				.and()
-					.addPractitioner(practitioner)
-					.addRelatedPerson(relatedPerson)
+				.addPractitioner(practitioner)
+				.addRelatedPerson(relatedPerson)
 				.build();
 	}
 
@@ -1108,9 +1500,9 @@ public class KoppeltaalClientTest extends BaseTest {
 		PractitionerParams practitioner = new PractitionerParams(UUID.randomUUID().toString(), baseUrl, NEW_RESOURCE_VERSION,
 				new NameParams("John", "Doe"));
 
-        CareTeamParams careTeam = new CareTeamParams(careTeamIdentifier.getValueSimple(), baseUrl, CareTeamStatus.ACTIVE, "Team Awesome", getPeriod(), "", patient.getUrl(), UUID.randomUUID().toString());
+		CareTeamParams careTeam = new CareTeamParams(careTeamIdentifier.getValueSimple(), baseUrl, CareTeamStatus.ACTIVE, "Team Awesome", getPeriod(), "", patient.getUrl(), UUID.randomUUID().toString());
 
-		KoppeltaalBundleBuilder koppeltaalBundleBuilder = new KoppeltaalBundleBuilder(messageId, domain, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getUrl(),
+		KoppeltaalBundleBuilder koppeltaalBundleBuilder = new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.CREATE_OR_UPDATE_CARE_PLAN, patient.getUrl(),
 				carePlan.getUrl());
 
 		return koppeltaalBundleBuilder
@@ -1146,7 +1538,7 @@ public class KoppeltaalClientTest extends BaseTest {
 		ActivityStatusParams activityStatus = new ActivityStatusParams(UUID.randomUUID().toString(), UUID.randomUUID().toString(), BASE_URL, NEW_RESOURCE_VERSION,
 				CarePlanActivityStatus.InProgress);
 
-		return new KoppeltaalBundleBuilder(messageId, domain, Event.UPDATE_CARE_PLAN_ACTIVITY_STATUS, patientUrl,
+		return new KoppeltaalBundleBuilder(messageId, domain, APP_SOURCE_SOFTWARE, APP_SOURCE_ENDPOINT, APP_SOURCE_NAME, APP_SOURCE_VERSION, Event.UPDATE_CARE_PLAN_ACTIVITY_STATUS, patientUrl,
 				activityStatus.getUrl()).addActivityStatus(activityStatus).and().build();
 	}
 
@@ -1169,6 +1561,6 @@ public class KoppeltaalClientTest extends BaseTest {
 	}
 
 	private String toString(Resource resource) {
-    	return new ReflectionToStringBuilder(resource, new MultilineRecursiveToStringStyle()).toString();
+		return ReflectionToStringBuilder.toString(resource, new ExcludeNullValuesMultilineRecursiveToStringStyle(), false, false,  true, null);
 	}
 }
