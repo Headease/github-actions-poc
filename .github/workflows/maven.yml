@@ -35,3 +35,8 @@ jobs:
       with:
         name: surefire-reports
         path: target/surefire-reports
+    - name: koppeltaal integration test output
+      uses: actions/upload-artifact@v1
+      with:
+        name: test-koppeltaal-integration-output
+        path: target/test-koppeltaal-integration
